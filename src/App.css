@@ -426,6 +426,12 @@ body {
 .fill.f-fable {
   background: linear-gradient(90deg, #e11d48, #fb7185);
 }
+.f-mythos {
+  background: #a855f7;
+}
+.fill.f-mythos {
+  background: linear-gradient(90deg, #9333ea, #c084fc);
+}
 .f-opus {
   background: var(--violet);
 }

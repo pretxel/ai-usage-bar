@@ -77,6 +77,7 @@ export type DayRange = "all" | 7 | 15 | 30;
 
 export type ModelFamily =
   | "fable"
+  | "mythos"
   | "opus"
   | "sonnet"
   | "haiku"
@@ -88,6 +89,7 @@ export type ModelFamily =
 export function familyOf(model: string): ModelFamily {
   const m = model.toLowerCase();
   if (m.includes("fable")) return "fable";
+  if (m.includes("mythos")) return "mythos";
   if (m.includes("opus")) return "opus";
   if (m.includes("sonnet")) return "sonnet";
   if (m.includes("haiku")) return "haiku";

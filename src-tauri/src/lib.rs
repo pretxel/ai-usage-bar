@@ -37,7 +37,7 @@ const OPENCODE: &str = "opencode";
 fn claude_family(model: &str) -> Option<(&'static str, u32, u32)> {
     let m = model.to_lowercase();
     let tokens: Vec<&str> = m.split('-').filter(|t| !t.is_empty()).collect();
-    let (family, fam_idx) = ["fable", "opus", "sonnet", "haiku"]
+    let (family, fam_idx) = ["fable", "mythos", "opus", "sonnet", "haiku"]
         .iter()
         .find_map(|f| tokens.iter().position(|t| t == f).map(|i| (*f, i)))?;
     let version_of = |slice: &[&str]| -> Vec<u32> {
@@ -68,7 +68,10 @@ fn claude_pricing(model: &str, date: &str) -> (f64, f64, f64, f64) {
         return (0.0, 0.0, 0.0, 0.0);
     };
     match family {
-        "fable" => (10.0, 12.5, 1.0, 50.0),
+        // Mythos is priced as its Fable counterpart. Fable 5.1 cut cache reads
+        // to $0.25/MTok; 5.0 and earlier stay at $1.
+        "fable" | "mythos" if major > 5 || (major == 5 && minor >= 1) => (10.0, 12.5, 0.25, 50.0),
+        "fable" | "mythos" => (10.0, 12.5, 1.0, 50.0),
         // Opus 4.5 dropped to a third of the Opus 4.1 / 4.0 / 3 rates.
         "opus" if major < 4 || (major == 4 && minor < 5) => (15.0, 18.75, 1.50, 75.0),
         "opus" => (5.0, 6.25, 0.50, 25.0),
@@ -1088,8 +1091,27 @@ mod tests {
         let (pi, pcw, pcr, po) = claude_pricing("claude-fable-5", TODAY);
         assert_eq!(pi + pcw + pcr + po, 73.5);
         assert_eq!(claude_display_name("claude-fable-5"), "Fable 5");
+        // Fable 5.1 keeps the tier rates but reads cache at $0.25.
+        assert_eq!(
+            claude_pricing("claude-fable-5-1", TODAY),
+            (10.0, 12.5, 0.25, 50.0)
+        );
+        assert_eq!(claude_display_name("claude-fable-5-1"), "Fable 5.1");
         // Unknown models still price at $0
         assert_eq!(claude_pricing("<synthetic>", TODAY), (0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn mythos_prices_as_fable() {
+        assert_eq!(
+            claude_pricing("claude-mythos-5", TODAY),
+            (10.0, 12.5, 1.0, 50.0)
+        );
+        assert_eq!(
+            claude_pricing("claude-mythos-5-1", TODAY),
+            (10.0, 12.5, 0.25, 50.0)
+        );
+        assert_eq!(claude_display_name("claude-mythos-5-1"), "Mythos 5.1");
     }
 
     #[test]
