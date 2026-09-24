@@ -9,7 +9,7 @@
  * `UsageReport` from the Rust backend and listens for `usage-changed` events
  * emitted by the filesystem watcher to auto-refresh.
  */
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -23,7 +23,7 @@ import {
   familyOf,
   providerAccent,
 } from "./types";
-import { ago, compact, money, prettyDate, shortDay } from "./format";
+import { ago, clock, compact, money, prettyDate, shortDay } from "./format";
 import "./App.css";
 
 type Metric = "cost" | "tokens" | "breakdown";
@@ -31,26 +31,50 @@ type Metric = "cost" | "tokens" | "breakdown";
 export default function App() {
   const [report, setReport] = useState<UsageReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // `loading` is a foreground fetch (first load, filter or range change) and
+  // dims the dashboard; `refreshing` is a watcher-triggered background fetch
+  // that swaps data in place without disturbing the view.
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const latest = useRef(0);
   const [metric, setMetric] = useState<Metric>("cost");
   const [filter, setFilter] = useState<ProviderFilter>("all");
   const [range, setRange] = useState<DayRange>("all");
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await invoke<UsageReport>("get_usage", {
-        provider: filter,
-        days: range === "all" ? null : range,
-      });
-      setReport(r);
-    } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [filter, range]);
+  const load = useCallback(
+    async (background = false) => {
+      // Only the newest request may commit, so a slow response for an old
+      // filter can't overwrite a newer one.
+      const id = ++latest.current;
+      if (background) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+        setError(null);
+      }
+      try {
+        const r = await invoke<UsageReport>("get_usage", {
+          provider: filter,
+          days: range === "all" ? null : range,
+        });
+        if (id === latest.current) {
+          setReport(r);
+          setError(null);
+        }
+      } catch (e) {
+        // A failed background refresh keeps the last good report on screen.
+        if (id === latest.current && !background) {
+          setError(typeof e === "string" ? e : String(e));
+        }
+      } finally {
+        if (id === latest.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    [filter, range],
+  );
 
   useEffect(() => {
     load();
@@ -58,7 +82,7 @@ export default function App() {
 
   // Live updates: backend watches transcript dirs and emits on change.
   useEffect(() => {
-    const un = listen("usage-changed", () => load());
+    const un = listen("usage-changed", () => load(true));
     return () => {
       un.then((off) => off());
     };
@@ -67,9 +91,9 @@ export default function App() {
   return (
     <div className="app">
       <div className="bg-glow" aria-hidden />
-      <Header report={report} loading={loading} />
+      <Header report={report} busy={loading || refreshing} />
       <main className={"content" + (loading && report ? " busy" : "")}>
-        {error && <ErrorState message={error} onRetry={load} />}
+        {error && <ErrorState message={error} onRetry={() => load()} />}
         {!error && loading && !report && <Loading />}
         {!error && report && (
           <Dashboard
@@ -89,29 +113,29 @@ export default function App() {
 
 function Header({
   report,
-  loading,
+  busy,
 }: {
   report: UsageReport | null;
-  loading: boolean;
+  busy: boolean;
 }) {
   return (
     <header className="header">
       <div className="brand">
-        <img className="brand-logo" src="/logo.png" alt="" aria-hidden />
+        <img className="brand-logo" src="/logo.svg" alt="" aria-hidden />
         <div className="brand-text">
           <h1>Token Tracker</h1>
           <p>
             {report
-              ? `${report.fileCount.toLocaleString()} transcripts · updated ${prettyDate(
+              ? `${report.fileCount.toLocaleString()} transcripts · updated ${clock(
                   report.generatedAt,
                 )}`
               : "Reading local Claude Code usage…"}
           </p>
         </div>
       </div>
-      <div className={"live" + (loading ? " busy" : "")} title="Updates automatically when transcripts change">
+      <div className={"live" + (busy ? " busy" : "")} title="Updates automatically when transcripts change">
         <span className="live-dot" aria-hidden />
-        {loading ? "Updating…" : "Live"}
+        {busy ? "Updating…" : "Live"}
       </div>
     </header>
   );
@@ -163,7 +187,10 @@ function Dashboard({
         <Stat
           label="Total tokens"
           value={compact(t.total)}
-          sub={`${compact(t.input)} in · ${compact(t.output)} out`}
+          sub={`${cachePct(t.cacheRead, t.total)} cached`}
+          title={`${compact(t.input)} input · ${compact(t.output)} output · ${compact(
+            t.cacheCreation,
+          )} cache write · ${compact(t.cacheRead)} cache read`}
         />
         <Stat label="Messages" value={compact(report.totalMessages)} />
         <Stat
@@ -178,14 +205,19 @@ function Dashboard({
           <ModelBars models={report.models} />
         </Panel>
 
-        <Panel title="Token composition" hint="Across all models">
-          <TokenComposition report={report} />
-        </Panel>
+        <div className="stack-col">
+          <Panel title="Token composition" hint="Across all models">
+            <TokenComposition report={report} />
+          </Panel>
+          <Panel title="Tokens by provider" hint="Bar length relative to the largest source">
+            <ProviderTokenComparison providers={report.providers} />
+          </Panel>
+        </div>
       </div>
 
       <Panel
         title="Daily activity"
-        hint={window ? `Last ${window} days` : `Last ${Math.min(90, report.byDay.length)} days`}
+        hint={`Last ${window ?? 90} days`}
         right={
           <Toggle
             value={metric}
@@ -202,14 +234,10 @@ function Dashboard({
       </Panel>
 
       <Panel
-        title="Day × month matrix"
-        hint="Each cell is one calendar day · follows the Cost / Tokens toggle"
+        title="Activity calendar"
+        hint="Last 12 months · follows the Cost / Tokens toggle"
       >
-        <MonthMatrix byDay={report.byDay} metric={metric} />
-      </Panel>
-
-      <Panel title="Tokens by provider" hint="Input · Output · Cache write · Cache read">
-        <ProviderTokenComparison providers={report.providers} />
+        <ActivityCalendar byDay={report.byDay} metric={metric} />
       </Panel>
 
       <Panel title="Top projects" hint={`${report.byProject.length} total`}>
@@ -293,15 +321,17 @@ function Stat({
   sub,
   accent,
   big,
+  title,
 }: {
   label: string;
   value: string;
   sub?: string;
+  title?: string;
   accent?: "violet" | "amber";
   big?: boolean;
 }) {
   return (
-    <div className={"stat" + (big ? " big" : "") + (accent ? " a-" + accent : "")}>
+    <div className={"stat" + (big ? " big" : "") + (accent ? " a-" + accent : "")} title={title}>
       <span className="stat-label">{label}</span>
       <span className="stat-value">{value}</span>
       {sub && <span className="stat-sub">{sub}</span>}
@@ -334,11 +364,16 @@ function Panel({
   );
 }
 
+const MODELS_COLLAPSED = 8;
+
 function ModelBars({ models }: { models: ModelUsage[] }) {
+  const [expanded, setExpanded] = useState(false);
   const max = Math.max(...models.map((m) => m.cost), 0.0001);
+  const hidden = models.length - MODELS_COLLAPSED;
+  const shown = expanded || hidden <= 1 ? models : models.slice(0, MODELS_COLLAPSED);
   return (
     <div className="bars">
-      {models.map((m) => {
+      {shown.map((m) => {
         const t = m.tokens;
         const tsegs = [
           { key: "input", value: t.input, cls: "seg-in" },
@@ -377,8 +412,18 @@ function ModelBars({ models }: { models: ModelUsage[] }) {
           </div>
         );
       })}
+      {hidden > 1 && (
+        <button className="more" onClick={() => setExpanded((e) => !e)}>
+          {expanded ? "Show fewer" : `Show ${hidden} more models`}
+        </button>
+      )}
     </div>
   );
+}
+
+/** Share of `part` in `total` as a percentage label, e.g. "97.8%". */
+function cachePct(part: number, total: number): string {
+  return total > 0 ? `${((part / total) * 100).toFixed(1)}%` : "0%";
 }
 
 function TokenComposition({ report }: { report: UsageReport }) {
@@ -526,87 +571,116 @@ function Timeline({
   );
 }
 
-function monthLabel(key: string): string {
-  const d = new Date(key + "-01T00:00:00");
-  if (isNaN(d.getTime())) return key;
-  // Lead with the year on January so multi-year spans stay readable.
-  return key.endsWith("-01")
-    ? d.toLocaleDateString("en-US", { month: "short", year: "2-digit" })
-    : d.toLocaleDateString("en-US", { month: "short" });
+const CAL_WEEKS = 53;
+const DAY_MS = 86_400_000;
+const WEEKDAY_LABELS = ["", "Mon", "", "Wed", "", "Fri", ""];
+
+/** UTC midnight of `d`, as epoch ms. Transcript dates and "today" are UTC. */
+function utcMidnight(d: Date): number {
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
 
-function MonthMatrix({ byDay, metric }: { byDay: DayUsage[]; metric: Metric }) {
-  const { months, allCount, valueAt, max } = useMemo(() => {
-    const valid = byDay.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.date));
-    const map = new Map<string, number>();
-    const monthSet = new Set<string>();
-    let mx = 0;
-    for (const d of valid) {
-      const v = metric === "cost" ? d.cost : d.tokens.total;
-      map.set(d.date, v);
-      monthSet.add(d.date.slice(0, 7));
-      if (v > mx) mx = v;
+function isoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** 25th / 50th / 75th percentile (nearest rank) of the non-zero values. */
+function quartiles(values: number[]): [number, number, number] {
+  const nz = values.filter((v) => v > 0).sort((a, b) => a - b);
+  if (nz.length === 0) return [0, 0, 0];
+  const at = (p: number) => nz[Math.max(0, Math.ceil(p * nz.length) - 1)];
+  return [at(0.25), at(0.5), at(0.75)];
+}
+
+/** Intensity 0–4: 0 is no activity, 1–4 are quartile buckets of non-zero days. */
+function levelOf(v: number, [q1, q2, q3]: [number, number, number]): number {
+  if (v <= 0) return 0;
+  if (v <= q1) return 1;
+  if (v <= q2) return 2;
+  if (v <= q3) return 3;
+  return 4;
+}
+
+function ActivityCalendar({ byDay, metric }: { byDay: DayUsage[]; metric: Metric }) {
+  const { cells, labels } = useMemo(() => {
+    const valueOf = new Map<string, number>();
+    for (const d of byDay) valueOf.set(d.date, metric === "cost" ? d.cost : d.tokens.total);
+
+    // 53 Sunday-start weeks ending with the week that contains today.
+    const today = utcMidnight(new Date());
+    const start = today - (new Date(today).getUTCDay() + 7 * (CAL_WEEKS - 1)) * DAY_MS;
+    const slots = Array.from({ length: CAL_WEEKS * 7 }, (_, i) => {
+      const ms = start + i * DAY_MS;
+      const date = isoDay(ms);
+      return { ms, date, future: ms > today, value: valueOf.get(date) ?? 0 };
+    });
+    const q = quartiles(slots.filter((s) => !s.future).map((s) => s.value));
+    const cells = slots.map((s) => ({ ...s, level: levelOf(s.value, q) }));
+
+    // Label the week column that holds each month's 1st. The leading partial
+    // month gets a label only when there is room before the next one.
+    const labels: { col: number; text: string }[] = [];
+    for (let col = 0; col < CAL_WEEKS; col++) {
+      const first = slots.slice(col * 7, col * 7 + 7).find((s) => s.date.endsWith("-01"));
+      if (first) labels.push({ col, text: monthShort(first.ms) });
     }
-    const sorted = Array.from(monthSet).sort();
-    const capped = sorted.length > 12 ? sorted.slice(sorted.length - 12) : sorted;
-    const valueAt = (month: string, day: number) =>
-      map.get(`${month}-${String(day).padStart(2, "0")}`) ?? null;
-    return { months: capped, allCount: sorted.length, valueAt, max: mx };
+    if (labels.length === 0 || labels[0].col > 2) labels.unshift({ col: 0, text: monthShort(start) });
+    return { cells, labels };
   }, [byDay, metric]);
 
-  if (months.length === 0)
-    return <div className="empty-mini">No dated activity yet.</div>;
-
-  const days = Array.from({ length: 31 }, (_, i) => i + 1);
   const fmt = (v: number) => (metric === "cost" ? money(v) : compact(v) + " tokens");
-  const cols = `30px repeat(${months.length}, 16px)`;
 
   return (
-    <div className="matrix">
-      {allCount > months.length && (
-        <div className="matrix-note">Showing the last 12 of {allCount} months.</div>
-      )}
-      <div className="matrix-grid" style={{ gridTemplateColumns: cols }}>
-        <span className="mx-corner" />
-        {months.map((m) => (
-          <span key={m} className="mx-month">
-            {monthLabel(m)}
+    <div className="cal">
+      <div className="cal-months">
+        {labels.map((l) => (
+          <span key={l.col} style={{ gridColumn: `${l.col + 2} / span 4` }}>
+            {l.text}
           </span>
         ))}
-        {days.map((day) => (
-          <Fragment key={day}>
-            <span className="mx-day">{day === 1 || day % 5 === 0 ? day : ""}</span>
-            {months.map((m) => {
-              const v = valueAt(m, day);
-              if (v == null) return <span key={m} className="mx-cell void" />;
-              const ratio = max > 0 ? v / max : 0;
-              const alpha = v <= 0 ? 0 : 0.15 + 0.85 * Math.sqrt(ratio);
-              return (
-                <span
-                  key={m}
-                  className={"mx-cell" + (v <= 0 ? " zero" : "")}
-                  style={
-                    v > 0
-                      ? { backgroundColor: `rgba(139, 124, 246, ${alpha.toFixed(3)})` }
-                      : undefined
-                  }
-                  title={`${monthLabel(m)} ${day} · ${fmt(v)}`}
-                />
-              );
-            })}
-          </Fragment>
-        ))}
       </div>
-      <div className="matrix-legend">
+      <div className="cal-grid">
+        {WEEKDAY_LABELS.map((w, i) => (
+          <span key={`w${i}`} className="cal-weekday">
+            {w}
+          </span>
+        ))}
+        {cells.map((c) =>
+          c.future ? (
+            <span key={c.date} className="cal-cell cal-future" />
+          ) : (
+            <span
+              key={c.date}
+              className={`cal-cell cal-l${c.level}`}
+              title={`${longDay(c.ms)} · ${c.level === 0 ? "No activity" : fmt(c.value)}`}
+            />
+          ),
+        )}
+      </div>
+      <div className="cal-legend">
         <span>Less</span>
-        <span className="mx-cell" style={{ backgroundColor: "rgba(139,124,246,0.15)" }} />
-        <span className="mx-cell" style={{ backgroundColor: "rgba(139,124,246,0.4)" }} />
-        <span className="mx-cell" style={{ backgroundColor: "rgba(139,124,246,0.7)" }} />
-        <span className="mx-cell" style={{ backgroundColor: "rgba(139,124,246,1)" }} />
+        {[0, 1, 2, 3, 4].map((l) => (
+          <span key={l} className={`cal-cell cal-l${l}`} />
+        ))}
         <span>More</span>
       </div>
     </div>
   );
+}
+
+function monthShort(ms: number): string {
+  return new Date(ms).toLocaleDateString("en-US", { month: "short", timeZone: "UTC" });
+}
+
+/** "Tue, Sep 22, 2026" */
+function longDay(ms: number): string {
+  return new Date(ms).toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 function Projects({ projects }: { projects: ProjectUsage[] }) {
@@ -664,9 +738,8 @@ function ProviderTokenComparison({
             <div className="pc-label">
               <span className={"pt-dot " + providerAccent(p.provider)} />
               <span className="pc-name">{p.displayName}</span>
-              <span className="pc-meta">
-                {compact(p.messages)} msg
-              </span>
+              <span className="pc-meta">{compact(p.messages)} msg</span>
+              <span className="pc-total">{compact(t.total)}</span>
             </div>
             <div className="pc-track">
               {segs.map((s) => (
@@ -678,7 +751,6 @@ function ProviderTokenComparison({
                 />
               ))}
             </div>
-            <span className="pc-total">{compact(t.total)}</span>
           </div>
         );
       })}

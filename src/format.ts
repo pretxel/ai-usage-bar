@@ -52,3 +52,10 @@ export function shortDay(date: string): string {
   if (isNaN(d.getTime())) return date;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
+
+/** Local wall-clock time of a timestamp, e.g. "4:21 PM". */
+export function clock(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}

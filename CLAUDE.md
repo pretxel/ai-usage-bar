@@ -61,7 +61,7 @@ Pipeline: walk transcript dirs → parse JSONL per source → dedup → price �
 
 `App` calls `invoke("get_usage", { provider: filter })`, holds the `UsageReport`, and
 re-fetches when the backend emits `usage-changed`. All charts are hand-rolled CSS bars /
-grids — **no chart library**; don't add one. `Timeline` and `MonthMatrix` fill missing
+grids — **no chart library**; don't add one. `Timeline` and `ActivityCalendar` fill missing
 calendar days client-side from the sparse `byDay` array.
 
 - `src/types.ts` — TS interfaces that MUST mirror the Rust structs. Rust serializes
