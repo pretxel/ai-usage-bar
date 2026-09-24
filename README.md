@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/logo.svg" width="96" height="96" alt="Token Tracker logo">
+</p>
+
 # Token Tracker
 
 [![Platform](https://img.shields.io/badge/platform-macOS-black)](https://github.com/edselserrano/token-tracker)
@@ -14,6 +18,8 @@ read straight from your transcripts. A menu-bar tray shows today's estimated
 cost at a glance.
 
 ![Token Tracker dashboard](docs/screenshot.png)
+
+<sub>Screenshots use generated demo data.</sub>
 
 ## Supported sources
 
@@ -33,22 +39,31 @@ No network, no telemetry. Everything is parsed locally on disk.
 
 - **Source filter** — All / Claude Code / Codex / OpenCode, each chip showing
   its spend.
+- **Range** — All time / 30 / 15 / 7 days.
 - **Estimated spend / today / avg per day / tokens / messages / sessions** —
-  six headline stat cards with accent colors.
-- **Spend by model** — horizontal bars per model (Opus 4.8, Sonnet 5, GPT-5.6
-  Sol, Haiku 4.5, Fable 5…) with inline token mini-bars showing input/output/
-  cache-write/cache-read breakdown.
+  six headline stat cards; the tokens card shows how much was served from cache.
+- **Spend by model** — horizontal bars per model (Opus 5.5, Fable 5.1, Sonnet 5,
+  GPT-6 Sol, Haiku 4.5…) with inline token mini-bars showing input / output /
+  cache-write / cache-read. Shows the top 8, with a toggle for the rest.
+- **Token composition** and **Tokens by provider** — stacked bars comparing
+  token types overall and per source.
 
   ![Models and token composition](docs/models-composition.png)
 
-- **Token composition** — stacked bar + legend showing the input / output /
-  cache-write / cache-read ratio across all models.
 - **Daily activity** — bar timeline (up to 90 days), toggle cost ⇄ tokens ⇄
   breakdown, hover for per-day detail.
-- **Day x month matrix** — calendar heatmap showing activity density per
-  calendar day, up to 12 rolling months.
+
+  ![Daily activity](docs/daily-activity.png)
+
+- **Activity calendar** — GitHub-style contribution calendar for the last 12
+  months: one column per week, one row per weekday, shaded in 5 levels by
+  quartile of your active days. Hover a day for its cost or tokens.
+
+  ![Activity calendar](docs/activity-calendar.png)
+
 - **Top projects** — cost, messages, sessions, last-used per project (top 12).
-- **Tokens by provider** — side-by-side stacked bar comparison of token types.
+- **Live** — a filesystem watcher refreshes the dashboard in place as
+  transcripts change.
 - **Tray** — today's combined estimated cost in the macOS menu bar, updates live.
 
   ![Tray icon](docs/tray-preview.png)
@@ -115,8 +130,8 @@ collect_entries()   # walk dirs, parse files in parallel (rayon)
 dedup by Entry.dedup_key         # c:{requestId}:{messageId} | x:{path}#{idx} | o:{sessionId}
 
 pricing()                        # (input, cache_write, cache_read, output) USD per 1M tokens
-    ├── claude_pricing()         # version-aware: Opus 4.5/4.8, Sonnet 5 intro pricing...
-    └── openai_pricing()         # tiers: GPT-5.6, 5.5, 5.4, 5.3, 5.2, 5.1, 4.1, 4o, o3/o4...
+    ├── claude_pricing()         # version-aware: Opus 3/4.x/5/5.5, Fable & Mythos 5.x, Sonnet, Haiku
+    └── openai_pricing()         # tiers + dated price cuts: GPT-6, GPT-5.6, 5.5 … 4o, o-series
 
 build_report() → UsageReport     # aggregates by model / day / project over the filter window
 ```
@@ -134,10 +149,9 @@ App
     ├── ProviderTabs / RangeTabs
     ├── Stats (spend, today, avg, tokens, messages, sessions)
     ├── Spend by model (ModelBars with token mini-bars)
-    ├── Token composition (stacked bar + legend)
+    ├── Token composition + Tokens by provider (stacked bars)
     ├── Daily activity (Timeline with cost/tokens/breakdown toggle)
-    ├── Day x month matrix (calendar heatmap)
-    ├── Tokens by provider comparison
+    ├── Activity calendar (week × weekday contribution grid)
     ├── Top projects
     └── Footer (data dirs + disclaimer)
 ```
@@ -155,10 +169,13 @@ field in `lib.rs` → add the matching `camelCase` field here.
 Estimates use public list pricing (USD per 1M tokens). Pricing functions in
 `src-tauri/src/lib.rs`:
 
-- `claude_pricing(model, date)` — version-aware (Opus 4.x vs 3, Sonnet 5
-  introductory pricing expires 2026-09-01, Haiku 3 vs 4).
-- `openai_pricing(model)` — tier-based (GPT-5.6 Sol/Terra/Luna, 5.5 Pro, 5.4
-  Nano/Mini, 5.3, 5.2, 5.1, 4.1, GPT-4o, o3/o4-mini, etc.).
+- `claude_pricing(model, date)` — version-aware (Opus 5.5 vs 5 / 4.5+ vs
+  legacy Opus, Fable/Mythos 5.1 cache-read rate, Sonnet 5, Haiku 3 vs 4.5).
+  Handles context-window tags such as `claude-opus-5-5[1m]`.
+- `openai_pricing(model, date)` — tier-based (GPT-6 Astra/Sol/Luna, GPT-5.6
+  Sol/Terra/Luna/Cyber, 5.5, 5.4, 5.3 Codex, 5.2, 5.1, Pro models, 4.1, 4o,
+  o-series). Price cuts are dated, so older entries keep the rate in effect
+  when they were logged.
 - `opencode_pricing(model, date)` — extracts provider ID from
   `<providerID>/<model>` format and dispatches to the appropriate pricing
   function.
@@ -166,8 +183,8 @@ Estimates use public list pricing (USD per 1M tokens). Pricing functions in
 Unknown / `<synthetic>` models are counted for tokens but priced at $0. These
 are **estimates**, not a billing statement.
 
-To update pricing when rates change, edit the relevant match arms in
-`lib.rs:66-157`; tests validate the tables and catch regressions.
+To update pricing when rates change, edit the pricing functions in
+`src-tauri/src/lib.rs`; tests validate the tables and catch regressions.
 
 ## Contributing
 
