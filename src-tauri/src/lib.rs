@@ -36,6 +36,9 @@ const OPENCODE: &str = "opencode";
 /// version component — only one- and two-digit tokens qualify.
 fn claude_family(model: &str) -> Option<(&'static str, u32, u32)> {
     let m = model.to_lowercase();
+    // Drop a context-window tag (`claude-opus-5-5[1m]`) so it isn't glued to
+    // the last version token.
+    let m = m.split('[').next().unwrap_or("");
     let tokens: Vec<&str> = m.split('-').filter(|t| !t.is_empty()).collect();
     let (family, fam_idx) = ["fable", "mythos", "opus", "sonnet", "haiku"]
         .iter()
@@ -63,7 +66,7 @@ fn claude_family(model: &str) -> Option<(&'static str, u32, u32)> {
 
 /// Claude pricing. `date` (YYYY-MM-DD) selects time-boxed rates, so historical
 /// entries keep the rate that applied when they were logged.
-fn claude_pricing(model: &str, date: &str) -> (f64, f64, f64, f64) {
+fn claude_pricing(model: &str, _date: &str) -> (f64, f64, f64, f64) {
     let Some((family, major, minor)) = claude_family(model) else {
         return (0.0, 0.0, 0.0, 0.0);
     };
@@ -72,13 +75,14 @@ fn claude_pricing(model: &str, date: &str) -> (f64, f64, f64, f64) {
         // to $0.25/MTok; 5.0 and earlier stay at $1.
         "fable" | "mythos" if major > 5 || (major == 5 && minor >= 1) => (10.0, 12.5, 0.25, 50.0),
         "fable" | "mythos" => (10.0, 12.5, 1.0, 50.0),
-        // Opus 4.5 dropped to a third of the Opus 4.1 / 4.0 / 3 rates.
+        // Opus 4.5 dropped to a third of the Opus 4.1 / 4.0 / 3 rates; Opus 5.5
+        // cut again to $4/$20 with cache reads at 0.05x ($0.20).
         "opus" if major < 4 || (major == 4 && minor < 5) => (15.0, 18.75, 1.50, 75.0),
+        "opus" if major > 5 || (major == 5 && minor >= 5) => (4.0, 5.0, 0.20, 20.0),
         "opus" => (5.0, 6.25, 0.50, 25.0),
-        // Sonnet 5 is on introductory pricing through 2026-08-31.
-        "sonnet" if major >= 5 && !date.is_empty() && date < "2026-09-01" => {
-            (2.0, 2.5, 0.20, 10.0)
-        }
+        // Sonnet 5's launch pricing ($2/$10) became permanent; the scheduled
+        // 2026-09-01 increase to $3/$15 was cancelled.
+        "sonnet" if major >= 5 => (2.0, 2.5, 0.20, 10.0),
         "sonnet" => (3.0, 3.75, 0.30, 15.0),
         "haiku" if major < 4 => (0.80, 1.0, 0.08, 4.0),
         _ => (1.0, 1.25, 0.10, 5.0),
@@ -87,18 +91,31 @@ fn claude_pricing(model: &str, date: &str) -> (f64, f64, f64, f64) {
 
 /// OpenAI / Codex pricing. Cache-write is unused (Codex reports no cache
 /// creation), so it is returned as 0; cache-read carries the cached-input rate.
-fn openai_pricing(model: &str) -> (f64, f64, f64, f64) {
+/// `date` (YYYY-MM-DD) selects the rate in effect when the entry was logged;
+/// an empty date gets the current rate. Pro models have no cached-input
+/// discount, so cached tokens bill at the full input rate.
+fn openai_pricing(model: &str, date: &str) -> (f64, f64, f64, f64) {
     let m = model.to_lowercase();
+    let since = |day: &str| date.is_empty() || date >= day;
     // (input, cache_write=0, cached_input, output)
-    // GPT-5.6 tiers. The bare `gpt-5.6` alias routes to Sol.
-    if m.contains("gpt-5.6-luna") {
-        (1.0, 0.0, 0.10, 6.0)
+    if m.contains("gpt-6-astra") {
+        (10.0, 0.0, 1.0, 50.0)
+    } else if m.contains("gpt-6-sol") {
+        (2.0, 0.0, 0.20, 10.0)
+    } else if m.contains("gpt-6-luna") {
+        (0.10, 0.0, 0.01, 0.50)
+    } else if m.contains("gpt-5.6-cyber") {
+        (12.50, 0.0, 1.25, 75.0)
+    // GPT-5.6 Luna and Terra were cut on 2026-07-30; Sol went on promotional
+    // pricing on 2026-08-21. The bare `gpt-5.6` alias routes to Sol.
+    } else if m.contains("gpt-5.6-luna") {
+        if since("2026-07-30") { (0.20, 0.0, 0.02, 1.20) } else { (1.0, 0.0, 0.10, 6.0) }
     } else if m.contains("gpt-5.6-terra") {
-        (2.50, 0.0, 0.25, 15.0)
+        if since("2026-07-30") { (2.0, 0.0, 0.20, 12.0) } else { (2.50, 0.0, 0.25, 15.0) }
     } else if m.contains("gpt-5.6") {
-        (5.0, 0.0, 0.50, 30.0)
+        if since("2026-08-21") { (4.0, 0.0, 0.40, 20.0) } else { (5.0, 0.0, 0.50, 30.0) }
     } else if m.contains("gpt-5.5-pro") || m.contains("gpt-5.4-pro") {
-        (30.0, 0.0, 3.0, 180.0)
+        (30.0, 0.0, 30.0, 180.0)
     } else if m.contains("gpt-5.5") {
         (5.0, 0.0, 0.50, 30.0)
     } else if m.contains("gpt-5.4-nano") {
@@ -108,23 +125,35 @@ fn openai_pricing(model: &str) -> (f64, f64, f64, f64) {
     } else if m.contains("gpt-5.4") {
         (2.50, 0.0, 0.25, 15.0)
     } else if m.contains("gpt-5.2-pro") {
-        (25.0, 0.0, 2.50, 150.0)
+        (21.0, 0.0, 21.0, 168.0)
     } else if m.contains("gpt-5.2-instant") {
         (1.50, 0.0, 0.15, 6.0)
     } else if m.contains("gpt-5.3") || m.contains("gpt-5.2") {
         (1.75, 0.0, 0.175, 14.0)
     } else if m.contains("gpt-5.1") {
         (1.25, 0.0, 0.125, 10.0)
+    } else if m.contains("gpt-5-pro") {
+        (15.0, 0.0, 15.0, 120.0)
     } else if m.contains("gpt-5-nano") || m.contains("gpt-5nano") {
         (0.05, 0.0, 0.005, 0.40)
     } else if m.contains("gpt-5-mini") || m.contains("gpt-5mini") {
         (0.25, 0.0, 0.025, 2.0)
     } else if m.contains("gpt-5") || m.contains("codex") {
         (1.25, 0.0, 0.125, 10.0)
-    } else if m.contains("o4-mini") || m.contains("o3-mini") {
+    } else if m.contains("o4-mini") {
         (1.10, 0.0, 0.275, 4.40)
+    } else if m.contains("o3-mini") {
+        (1.10, 0.0, 0.55, 4.40)
+    } else if m.contains("o3-pro") {
+        (20.0, 0.0, 20.0, 80.0)
     } else if m.contains("o3") {
         (2.0, 0.0, 0.50, 8.0)
+    } else if m.contains("o1-pro") {
+        (150.0, 0.0, 150.0, 600.0)
+    } else if m.starts_with("o1") || m.contains("-o1") {
+        (15.0, 0.0, 7.50, 60.0)
+    } else if m.contains("gpt-4.1-nano") {
+        (0.10, 0.0, 0.025, 0.40)
     } else if m.contains("gpt-4.1-mini") {
         (0.40, 0.0, 0.10, 1.60)
     } else if m.contains("gpt-4.1") {
@@ -147,14 +176,14 @@ fn opencode_pricing(model: &str, date: &str) -> (f64, f64, f64, f64) {
     match provider_id {
         "opencode" => (0.0, 0.0, 0.0, 0.0),
         "anthropic" => claude_pricing(model_id, date),
-        pid if pid.contains("openai") => openai_pricing(model_id),
+        pid if pid.contains("openai") => openai_pricing(model_id, date),
         _ => (0.0, 0.0, 0.0, 0.0),
     }
 }
 
 fn pricing(provider: &str, model: &str, date: &str) -> (f64, f64, f64, f64) {
     match provider {
-        CODEX => openai_pricing(model),
+        CODEX => openai_pricing(model, date),
         OPENCODE => opencode_pricing(model, date),
         _ => claude_pricing(model, date),
     }
@@ -1153,15 +1182,28 @@ mod tests {
     }
 
     #[test]
-    fn sonnet_5_introductory_pricing_expires() {
+    fn sonnet_5_launch_pricing_is_permanent() {
         assert_eq!(
             claude_pricing("claude-sonnet-5", "2026-08-31"),
             (2.0, 2.5, 0.20, 10.0)
         );
         assert_eq!(
-            claude_pricing("claude-sonnet-5", "2026-09-01"),
-            (3.0, 3.75, 0.30, 15.0)
+            claude_pricing("claude-sonnet-5", "2026-09-24"),
+            (2.0, 2.5, 0.20, 10.0)
         );
+    }
+
+    #[test]
+    fn opus_5_5_pricing() {
+        assert_eq!(
+            claude_pricing("claude-opus-5-5", TODAY),
+            (4.0, 5.0, 0.20, 20.0)
+        );
+        assert_eq!(
+            claude_pricing("claude-opus-5-5[1m]", TODAY),
+            (4.0, 5.0, 0.20, 20.0)
+        );
+        assert_eq!(claude_display_name("claude-opus-5-5"), "Opus 5.5");
     }
 
     #[test]
@@ -1177,17 +1219,40 @@ mod tests {
 
     #[test]
     fn openai_pricing_by_tier() {
-        assert_eq!(openai_pricing("gpt-5.6-sol"), (5.0, 0.0, 0.50, 30.0));
-        assert_eq!(openai_pricing("gpt-5.6-terra"), (2.50, 0.0, 0.25, 15.0));
-        assert_eq!(openai_pricing("gpt-5.6-luna"), (1.0, 0.0, 0.10, 6.0));
+        const NOW: &str = "2026-09-24";
+        assert_eq!(openai_pricing("gpt-6-astra", NOW), (10.0, 0.0, 1.0, 50.0));
+        assert_eq!(openai_pricing("gpt-6-sol", NOW), (2.0, 0.0, 0.20, 10.0));
+        assert_eq!(openai_pricing("gpt-6-luna", NOW), (0.10, 0.0, 0.01, 0.50));
+        assert_eq!(openai_pricing("gpt-5.6-sol", NOW), (4.0, 0.0, 0.40, 20.0));
+        assert_eq!(openai_pricing("gpt-5.6-terra", NOW), (2.0, 0.0, 0.20, 12.0));
+        assert_eq!(openai_pricing("gpt-5.6-luna", NOW), (0.20, 0.0, 0.02, 1.20));
+        assert_eq!(openai_pricing("gpt-5.6-cyber", NOW), (12.50, 0.0, 1.25, 75.0));
         // The bare 5.6 alias routes to Sol.
-        assert_eq!(openai_pricing("gpt-5.6"), (5.0, 0.0, 0.50, 30.0));
-        assert_eq!(openai_pricing("gpt-5.4-mini"), (0.75, 0.0, 0.075, 4.50));
-        assert_eq!(openai_pricing("gpt-5.3-codex"), (1.75, 0.0, 0.175, 14.0));
+        assert_eq!(openai_pricing("gpt-5.6", NOW), (4.0, 0.0, 0.40, 20.0));
+        assert_eq!(openai_pricing("gpt-5.4-mini", NOW), (0.75, 0.0, 0.075, 4.50));
+        assert_eq!(openai_pricing("gpt-5.3-codex", NOW), (1.75, 0.0, 0.175, 14.0));
+        // Pro models have no cached-input discount.
+        assert_eq!(openai_pricing("gpt-5-pro", NOW), (15.0, 0.0, 15.0, 120.0));
+        assert_eq!(openai_pricing("gpt-5.2-pro", NOW), (21.0, 0.0, 21.0, 168.0));
         // Legacy models keep their rates.
-        assert_eq!(openai_pricing("gpt-5-codex"), (1.25, 0.0, 0.125, 10.0));
-        assert_eq!(openai_pricing("gpt-4o"), (2.5, 0.0, 1.25, 10.0));
-        assert_eq!(openai_pricing("mystery-model"), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(openai_pricing("gpt-5-codex", NOW), (1.25, 0.0, 0.125, 10.0));
+        assert_eq!(openai_pricing("o3-mini", NOW), (1.10, 0.0, 0.55, 4.40));
+        assert_eq!(openai_pricing("gpt-4o", NOW), (2.5, 0.0, 1.25, 10.0));
+        assert_eq!(openai_pricing("mystery-model", NOW), (0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn gpt_5_6_price_cuts_apply_by_date() {
+        // Luna and Terra cut on 2026-07-30.
+        assert_eq!(openai_pricing("gpt-5.6-luna", "2026-07-29"), (1.0, 0.0, 0.10, 6.0));
+        assert_eq!(openai_pricing("gpt-5.6-luna", "2026-07-30"), (0.20, 0.0, 0.02, 1.20));
+        assert_eq!(openai_pricing("gpt-5.6-terra", "2026-07-29"), (2.50, 0.0, 0.25, 15.0));
+        assert_eq!(openai_pricing("gpt-5.6-terra", "2026-07-30"), (2.0, 0.0, 0.20, 12.0));
+        // Sol cut on 2026-08-21.
+        assert_eq!(openai_pricing("gpt-5.6-sol", "2026-08-20"), (5.0, 0.0, 0.50, 30.0));
+        assert_eq!(openai_pricing("gpt-5.6-sol", "2026-08-21"), (4.0, 0.0, 0.40, 20.0));
+        // No date -> current rate.
+        assert_eq!(openai_pricing("gpt-5.6-sol", ""), (4.0, 0.0, 0.40, 20.0));
     }
 
     #[test]
