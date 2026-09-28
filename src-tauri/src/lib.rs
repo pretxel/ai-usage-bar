@@ -67,9 +67,19 @@ fn claude_family(model: &str) -> Option<(&'static str, u32, u32)> {
 /// Claude pricing. `date` (YYYY-MM-DD) selects time-boxed rates, so historical
 /// entries keep the rate that applied when they were logged.
 fn claude_pricing(model: &str, _date: &str) -> (f64, f64, f64, f64) {
-    let Some((family, major, minor)) = claude_family(model) else {
+    let Some((family, mut major, mut minor)) = claude_family(model) else {
         return (0.0, 0.0, 0.0, 0.0);
     };
+    // Unversioned aliases (`opus`, `sonnet`, ...) resolve to the current
+    // release of that family rather than falling into the legacy buckets.
+    if major == 0 {
+        (major, minor) = match family {
+            "fable" | "mythos" => (5, 1),
+            "opus" => (5, 5),
+            "sonnet" => (5, 5),
+            _ => (4, 5),
+        };
+    }
     match family {
         // Mythos is priced as its Fable counterpart. Fable 5.1 cut cache reads
         // to $0.25/MTok; 5.0 and earlier stay at $1.
@@ -1145,6 +1155,11 @@ mod tests {
 
     #[test]
     fn claude_pricing_by_version() {
+        // Unversioned aliases price as the current release.
+        assert_eq!(claude_pricing("opus", TODAY), (4.0, 5.0, 0.20, 20.0));
+        assert_eq!(claude_pricing("sonnet", TODAY), (2.0, 2.5, 0.20, 10.0));
+        assert_eq!(claude_pricing("haiku", TODAY), (1.0, 1.25, 0.10, 5.0));
+        assert_eq!(claude_pricing("fable", TODAY), (10.0, 12.5, 0.25, 50.0));
         // Opus 4.5 and later are a third of the legacy Opus rates.
         assert_eq!(
             claude_pricing("claude-opus-5", TODAY),
