@@ -10,7 +10,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Rust](https://img.shields.io/badge/Rust-backend-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0-purple)](https://github.com/edselserrano/token-tracker)
+[![Version](https://img.shields.io/badge/version-0.2.1-purple)](https://github.com/edselserrano/token-tracker)
 
 Desktop app (Tauri v2 + React) that visualizes your local AI coding-assistant
 usage — estimated spend, token breakdown, daily activity, and per-project cost —

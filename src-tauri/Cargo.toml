@@ -1,6 +1,6 @@
 [package]
 name = "ai-usage-bar"
-version = "0.2.0"
+version = "0.2.1"
 description = "Visualize local AI model usage"
 authors = ["Edsel Serrano"]
 edition = "2021"
