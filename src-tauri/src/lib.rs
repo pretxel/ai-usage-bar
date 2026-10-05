@@ -20,7 +20,9 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
+use tauri::tray::{TrayIcon, TrayIconBuilder};
+#[cfg(not(target_os = "macos"))]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
 
 const CLAUDE: &str = "claude";
@@ -715,8 +717,10 @@ fn date_of(ts: &str) -> String {
 }
 
 fn project_name(path: &str) -> String {
-    path.trim_end_matches('/')
-        .rsplit('/')
+    // Transcripts record the cwd of the machine that wrote them, so accept
+    // both POSIX and Windows separators regardless of the host platform.
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
         .find(|s| !s.is_empty())
         .unwrap_or(path)
         .to_string()
@@ -1042,6 +1046,23 @@ fn tray_title() -> String {
         .unwrap_or_else(|_| "AI".to_string())
 }
 
+/// Show today's cost on the tray. macOS renders the title next to the icon;
+/// Windows ignores tray titles, so the cost goes in the tooltip there.
+fn update_tray(tray: &TrayIcon) {
+    let cost = tray_title();
+    #[cfg(target_os = "macos")]
+    let _ = tray.set_title(Some(cost));
+    #[cfg(not(target_os = "macos"))]
+    let _ = tray.set_tooltip(Some(format!("Token Tracker — today {cost} (est.)")));
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 /// Watch the transcript directories. On any debounced change, refresh the tray
 /// title and signal the frontend to reload (it re-fetches with its current
 /// provider filter). The debouncer is stored in app state to keep it alive for
@@ -1084,7 +1105,7 @@ fn start_watching(app: &AppHandle) {
                     return;
                 }
                 if let Some(tray) = handle.tray_by_id("main-tray") {
-                    let _ = tray.set_title(Some(tray_title()));
+                    update_tray(&tray);
                 }
                 let _ = handle.emit("usage-changed", ());
             }
@@ -1115,6 +1136,15 @@ mod tests {
     use super::*;
 
     const TODAY: &str = "2026-07-25";
+
+    #[test]
+    fn project_name_handles_both_separators() {
+        assert_eq!(project_name("/Users/me/repo"), "repo");
+        assert_eq!(project_name("/Users/me/repo/"), "repo");
+        assert_eq!(project_name(r"C:\Users\me\repo"), "repo");
+        assert_eq!(project_name(r"C:\Users\me\repo\"), "repo");
+        assert_eq!(project_name("unknown"), "unknown");
+    }
 
     #[test]
     fn fable_pricing() {
@@ -1406,8 +1436,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let title = tray_title();
-
             let show = MenuItem::with_id(app, "show", "Open Token Tracker", true, None::<&str>)?;
             let note = MenuItem::with_id(app, "note", "Today's cost shown above", false, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -1415,23 +1443,32 @@ pub fn run() {
 
             let mut builder = TrayIconBuilder::with_id("main-tray")
                 .tooltip("Token Tracker — today's estimated cost")
-                .title(title)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "show" => show_main_window(app),
                     "quit" => app.exit(0),
                     _ => {}
                 });
+            // Windows convention: left-click opens the app, right-click the menu.
+            #[cfg(not(target_os = "macos"))]
+            {
+                builder = builder.on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                });
+            }
             if let Some(icon) = app.default_window_icon() {
                 builder = builder.icon(icon.clone());
             }
-            builder.build(app)?;
+            let tray = builder.build(app)?;
+            update_tray(&tray);
 
             start_watching(app.handle());
             Ok(())
