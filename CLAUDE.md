@@ -5,8 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A Tauri v2 desktop app (React 19 + TypeScript frontend, Rust backend) that reads local
-AI coding-assistant transcripts, prices the token usage, and visualizes spend. macOS-only
-for now (menu-bar tray + bundle target). No network, no telemetry — everything is parsed
+AI coding-assistant transcripts, prices the token usage, and visualizes spend. Ships for
+macOS and Windows x64 (tray + `.dmg` / NSIS + MSI bundles). No network, no telemetry — everything is parsed
 on disk.
 
 Naming is inconsistent across layers — they all refer to the same app: product name
@@ -72,13 +72,22 @@ calendar days client-side from the sparse `byDay` array.
 ### Live updates — `start_watching()` in `lib.rs`
 
 A debounced (`notify` + `notify-debouncer-full`, 800ms) recursive watcher on both transcript
-dirs. On a create/modify/remove it updates the tray title and emits `usage-changed`. The
+dirs. On a create/modify/remove it refreshes the tray (`update_tray()`) and emits `usage-changed`. The
 debouncer is stashed in Tauri state so it outlives setup.
 
 ### Tray
 
-Set up in `run()`. Title is today's combined estimated cost (`tray_title()`). Menu: open
-window / quit. The tray, not the window, is the app's primary surface.
+Set up in `run()`. Shows today's combined estimated cost (`tray_title()`) via
+`update_tray()`: the tray **title** on macOS, the **tooltip** on Windows (tray titles are a
+no-op there). On Windows left-click opens the window (cfg-gated `on_tray_icon_event`).
+Menu: open window / quit. The tray, not the window, is the app's primary surface.
+
+### Releases
+
+`.github/workflows/release.yml` builds macOS (universal `.dmg`) and Windows (NSIS + MSI,
+unsigned) on `v*` tag push into a draft GitHub Release. CI runs only the pure unit tests —
+it `--skip`s the report tests that need real transcript data; keep that list in sync when
+adding such tests.
 
 ## Conventions
 

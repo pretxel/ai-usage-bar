@@ -4,7 +4,7 @@
 
 # Token Tracker
 
-[![Platform](https://img.shields.io/badge/platform-macOS-black)](https://github.com/edselserrano/token-tracker)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-black)](https://github.com/edselserrano/token-tracker)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
@@ -64,13 +64,15 @@ No network, no telemetry. Everything is parsed locally on disk.
 - **Top projects** — cost, messages, sessions, last-used per project (top 12).
 - **Live** — a filesystem watcher refreshes the dashboard in place as
   transcripts change.
-- **Tray** — today's combined estimated cost in the macOS menu bar, updates live.
+- **Tray** — today's combined estimated cost, updates live: shown in the macOS
+  menu bar, or in the tray icon tooltip on Windows (left-click opens the window).
 
   ![Tray icon](docs/tray-preview.png)
 
 ## Prerequisites
 
-- macOS (app uses native menu-bar tray + `.dmg` bundle target)
+- macOS, or Windows 10/11 x64 (uses the WebView2 runtime, preinstalled on most
+  systems; the installer fetches it if missing)
 - [Node.js](https://nodejs.org) 20+
 - [pnpm](https://pnpm.io) (`npm install -g pnpm`)
 - [Rust](https://rustup.rs) (stable)
@@ -85,6 +87,17 @@ pnpm tauri build    # outputs .dmg / .app under src-tauri/target/release/bundle/
 ```
 
 Open the `.dmg` and drag **Token Tracker** to Applications.
+
+On Windows, `pnpm tauri build` outputs an NSIS `-setup.exe` and an `.msi` under
+`src-tauri/target/release/bundle/`.
+
+### Prebuilt releases
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the macOS
+`.dmg` and the Windows `-setup.exe` / `.msi` and attaches them to a draft GitHub
+Release. The Windows builds are not code-signed, so SmartScreen shows an
+"unknown publisher" warning: click **More info → Run anyway**. The NSIS
+installer installs per-user and needs no admin rights.
 
 ## Develop
 

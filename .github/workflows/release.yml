@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          - platform: windows-latest
+            args: ""
+            rust-targets: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: pnpm install --frozen-lockfile
+
+      # Pure unit tests only: the report tests read the developer's real
+      # ~/.claude / ~/.codex data, which does not exist on CI runners.
+      - run: >-
+          cargo test --manifest-path src-tauri/Cargo.toml --
+          --skip report_smoke --skip codex_only_filter
+          --skip report_has_opencode_provider --skip opencode_only_filter
+          --skip day_range_filter
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: "Token Tracker ${{ github.ref_name }}"
+          releaseBody: "Estimates from public list pricing, not a billing statement. Windows builds are unsigned: SmartScreen → More info → Run anyway."
+          releaseDraft: true
+          args: ${{ matrix.args }}
+
+      # Manual runs have no tag/release to upload to; keep bundles as artifacts.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: bundles-${{ matrix.platform }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
